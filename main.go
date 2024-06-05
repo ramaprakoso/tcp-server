@@ -25,10 +25,20 @@ type ConnectionInfo struct {
 }
 
 type SensorData struct {
-	IMEI int64
-	// ProjectUUID string
+	IMEI       int64
 	ParsedData string
 	Timestamp  string
+}
+
+type ParsedData struct {
+	Altitude  int32   `json:"altitude"`
+	Angle     int32   `json:"angle"`
+	Latitude  int32   `json:"latitude"`
+	Longitude int32   `json:"longitude"`
+	Priority  int     `json:"priority"`
+	Satellite int     `json:"satellite"`
+	Speed     int     `json:"speed"`
+	Timestamp float64 `json:"timestamp"`
 }
 
 // Struct Json Teltonika
@@ -70,21 +80,6 @@ type Message struct {
 	Data Data `json:"data"`
 }
 
-// func isIMEIValid(db *sql.DB, imei int64) (bool, string, error) {
-// 	query := "SELECT project_uuid FROM devices WHERE imei = ?"
-// 	var projectUUID string
-// 	err := db.QueryRow(query, imei).Scan(&projectUUID)
-// 	if err != nil {
-// 		if err == sql.ErrNoRows {
-// 			return false, "", nil
-// 		}
-// 		return false, "", err
-// 	}
-
-// 	// IMEI found, return project_uuid
-// 	return true, projectUUID, nil
-// }
-
 func cleanAndParseIMEI(imeiString string) (int64, error) {
 	// Menghapus karakter escape Unicode ("\x00" dan "\x0f") dari string IMEI
 	regex := regexp.MustCompile(`[^\x20-\x7E]+`)
@@ -106,7 +101,7 @@ func failOnError(err error, msg string) {
 	}
 }
 
-func sendToMQTT(jsonData SensorData, logFile *os.File) {
+func sendToMQTT(jsonData map[string]interface{}, logFile *os.File) {
 	fmt.Println(jsonData)
 }
 
@@ -195,16 +190,6 @@ func acceptConnections(listener net.Listener, incomingConn chan ConnectionInfo) 
 			}
 
 			imei := numericIMEI
-			// valid, projectUUID, err := isIMEIValid(db, imei)
-			// if err != nil {
-			// 	fmt.Println("Error checking IMEI validity:", err)
-			// 	return
-			// }
-			// if !valid {
-			// 	fmt.Println("Invalid IMEI")
-			// 	return
-			// }
-
 			// fmt.Println("Imei Confirmed")
 			if _, err := conn.Write([]byte{0x01}); err != nil {
 				log.Println("Error writing to connection:", err)
@@ -214,7 +199,6 @@ func acceptConnections(listener net.Listener, incomingConn chan ConnectionInfo) 
 			connectionInfo := ConnectionInfo{
 				Conn: conn,
 				IMEI: imei,
-				// ProjectUUID: projectUUID,
 			}
 
 			incomingConn <- connectionInfo
@@ -231,7 +215,7 @@ func formattedTime(t time.Time) string {
 	return t.In(loc).Format("2006-01-02 15:04:05")
 }
 
-func processConnections(incomingConn chan ConnectionInfo, processedData chan SensorData, wg *sync.WaitGroup) {
+func processConnections(incomingConn chan ConnectionInfo, processedData chan map[string]interface{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for conn := range incomingConn {
@@ -252,31 +236,42 @@ func processConnections(incomingConn chan ConnectionInfo, processedData chan Sen
 		//Send response using avl data count
 		conn.Conn.Write([]byte(avlDatacounthex))
 
-		jsonData, err := json.Marshal(parsedData)
+		avlData, err := json.Marshal(parsedData.Avl_data[0])
 		if err != nil {
 			log.Println("Error encoding JSON data:", err)
 			continue
 		}
 
-		sensorData := SensorData{
-			IMEI: conn.IMEI,
-			// ProjectUUID: conn.ProjectUUID,
-			ParsedData: string(jsonData),
-			Timestamp:  formattedTime(time.Now()),
+		var avl AVLData
+		err = json.Unmarshal(avlData, &avl)
+		if err != nil {
+			log.Println("Error decoding JSON data:", err)
+			continue
 		}
 
-		processedData <- sensorData
+		sensorObj := map[string]interface{}{
+			"imei":              conn.IMEI,
+			"timestamp":         avl.Timestamp,
+			"priority":          avl.Priority,
+			"longitude":         avl.Longitude,
+			"latitude":          avl.Latitude,
+			"angle":             avl.Angle,
+			"satellite":         avl.Satellite,
+			"speed":             avl.Speed,
+			"timestamp_service": formattedTime(time.Now()),
+		}
+
+		processedData <- sensorObj
 
 		// Close the connection after processing data
 		conn.Conn.Close()
 	}
-
 }
 
-func respondToClients(processedData chan SensorData, logFile *os.File) {
+func respondToClients(processedData chan map[string]interface{}, logFile *os.File) {
 	for data := range processedData {
-		// fmt.Printf("IMEI: %d, ProjectUUID: %s\n", data.IMEI, data.ProjectUUID)
-		sendToMQTT(data, logFile)
+		fmt.Println(data)
+		// You can perform further processing or actions here
 	}
 }
 
@@ -303,7 +298,7 @@ func main() {
 	var wg sync.WaitGroup
 
 	incomingConn := make(chan ConnectionInfo, 1000)
-	processedData := make(chan SensorData, 1000)
+	processedData := make(chan map[string]interface{}, 1000)
 
 	db, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", config.DB.Username, config.DB.Password, config.DB.Host, config.DB.Port, config.DB.Name))
 	failOnError(err, "Failed to connect to the database")
