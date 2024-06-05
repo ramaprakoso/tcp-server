@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"sync"
+	"tcp_server/teltonika_decoder"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -18,16 +19,16 @@ import (
 )
 
 type ConnectionInfo struct {
-	Conn        net.Conn
-	IMEI        int64
-	ProjectUUID string
+	Conn net.Conn
+	IMEI int64
+	// ProjectUUID string
 }
 
 type SensorData struct {
-	IMEI        int64
-	ProjectUUID string
-	ParsedData  string
-	Timestamp   string
+	IMEI int64
+	// ProjectUUID string
+	ParsedData string
+	Timestamp  string
 }
 
 // Struct Json Teltonika
@@ -45,7 +46,6 @@ type Element struct {
 	Element_id  int    `json:"Element_id"`
 	Element_len int    `json:"Element_len"`
 	Element_val string `json:"Element_val"`
-	// Add other fields as needed
 }
 
 type AVLData struct {
@@ -60,35 +60,30 @@ type AVLData struct {
 	Satellite     int                      `json:"Satellite"`
 	Speed         int                      `json:"Speed"`
 	Timestamp     float64                  `json:"Timestamp"`
-	// Add other fields as needed
 }
 
 type Data struct {
 	Avl_data []AVLData `json:"Avl_data"`
-	// Add other fields as needed
 }
 
 type Message struct {
 	Data Data `json:"data"`
-	// Add other fields as needed
 }
 
-func isIMEIValid(db *sql.DB, imei int64) (bool, string, error) {
-	query := "SELECT project_uuid FROM devices WHERE imei = ?"
-	var projectUUID string
-	err := db.QueryRow(query, imei).Scan(&projectUUID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			// IMEI not found in the database
-			return false, "", nil
-		}
-		// Other error
-		return false, "", err
-	}
+// func isIMEIValid(db *sql.DB, imei int64) (bool, string, error) {
+// 	query := "SELECT project_uuid FROM devices WHERE imei = ?"
+// 	var projectUUID string
+// 	err := db.QueryRow(query, imei).Scan(&projectUUID)
+// 	if err != nil {
+// 		if err == sql.ErrNoRows {
+// 			return false, "", nil
+// 		}
+// 		return false, "", err
+// 	}
 
-	// IMEI found, return project_uuid
-	return true, projectUUID, nil
-}
+// 	// IMEI found, return project_uuid
+// 	return true, projectUUID, nil
+// }
 
 func cleanAndParseIMEI(imeiString string) (int64, error) {
 	// Menghapus karakter escape Unicode ("\x00" dan "\x0f") dari string IMEI
@@ -111,56 +106,8 @@ func failOnError(err error, msg string) {
 	}
 }
 
-func sendTorabbitmq(jsonData SensorData, logFile *os.File) {
-	// RabbitMQ server address
-	config, err := LoadConfig()
-	if err != nil {
-		fmt.Println("Error setup config:", err)
-		return
-	}
-
-	rabbitMQURL := config.RabbitMQ.URL
-
-	// Connect to RabbitMQ
-	conn, err := amqp.Dial(rabbitMQURL)
-	failOnError(err, "Failed to connect to RabbitMQ")
-	defer conn.Close()
-
-	// Create a channel
-	ch, err := conn.Channel()
-	failOnError(err, "Failed to open a channel")
-	defer ch.Close()
-
-	// Declare a queue with the name as IMEI
-	q, err := declareQueue(ch, jsonData.IMEI)
-	failOnError(err, "Failed to declare a queue")
-
-	// Convert JSON data to Message struct
-	// jsonObject := map[string]interface{}{
-	// 	"project_uuid": jsonData.ProjectUUID,
-	// 	"imei":         jsonData.IMEI,
-	// 	"sensor_data":  jsonData.ParsedData, // Assuming parsedData is a struct or similar
-	// 	"created_at":   jsonData.Timestamp,
-	// }
-
-	//send rabbit with json encode
-	jsonDataBytes, err := json.Marshal(jsonData)
-	failOnError(err, "Failed to marshal JSON")
-
-	err = ch.Publish(
-		"",     // exchange
-		q.Name, // routing key
-		false,  // mandatory
-		false,  // immediate
-		amqp.Publishing{
-			ContentType: "application/json",
-			Body:        jsonDataBytes,
-		},
-	)
-
-	fmt.Printf("ProjectUUID: %s, IMEI: %d, Timestamp: %s\n", jsonData.ProjectUUID, jsonData.IMEI, jsonData.Timestamp)
-	failOnError(err, "Failed to publish a message")
-	logFile.WriteString(fmt.Sprintf("[%s] Sent JSON data: %s\n", time.Now().In(time.FixedZone("Asia/Jakarta", 7*60*60)).Format("2006-01-02 15:04:05"), jsonData))
+func sendToMQTT(jsonData SensorData, logFile *os.File) {
+	fmt.Println(jsonData)
 }
 
 func declareQueue(ch *amqp.Channel, imei int64) (amqp.Queue, error) {
@@ -220,7 +167,7 @@ func createLogFile() (*os.File, error) {
 	return logFile, nil
 }
 
-func acceptConnections(db *sql.DB, listener net.Listener, incomingConn chan ConnectionInfo) {
+func acceptConnections(listener net.Listener, incomingConn chan ConnectionInfo) {
 	defer close(incomingConn)
 
 	for {
@@ -248,17 +195,15 @@ func acceptConnections(db *sql.DB, listener net.Listener, incomingConn chan Conn
 			}
 
 			imei := numericIMEI
-			valid, projectUUID, err := isIMEIValid(db, imei)
-
-			if err != nil {
-				fmt.Println("Error checking IMEI validity:", err)
-				return
-			}
-
-			if !valid {
-				fmt.Println("Invalid IMEI")
-				return
-			}
+			// valid, projectUUID, err := isIMEIValid(db, imei)
+			// if err != nil {
+			// 	fmt.Println("Error checking IMEI validity:", err)
+			// 	return
+			// }
+			// if !valid {
+			// 	fmt.Println("Invalid IMEI")
+			// 	return
+			// }
 
 			// fmt.Println("Imei Confirmed")
 			if _, err := conn.Write([]byte{0x01}); err != nil {
@@ -267,9 +212,9 @@ func acceptConnections(db *sql.DB, listener net.Listener, incomingConn chan Conn
 			}
 
 			connectionInfo := ConnectionInfo{
-				Conn:        conn,
-				IMEI:        imei,
-				ProjectUUID: projectUUID,
+				Conn: conn,
+				IMEI: imei,
+				// ProjectUUID: projectUUID,
 			}
 
 			incomingConn <- connectionInfo
@@ -301,7 +246,7 @@ func processConnections(incomingConn chan ConnectionInfo, processedData chan Sen
 		data := buffer[:n]
 		argument := fmt.Sprintf("%x", data)
 		bs, _ := hex.DecodeString(argument)
-		parsedData, err := Decode(&bs)
+		parsedData, err := teltonika_decoder.Decode(&bs)
 		avlDatacount := parsedData.Avl_data_count
 		avlDatacounthex := fmt.Sprintf("%X", avlDatacount)
 		//Send response using avl data count
@@ -314,10 +259,10 @@ func processConnections(incomingConn chan ConnectionInfo, processedData chan Sen
 		}
 
 		sensorData := SensorData{
-			IMEI:        conn.IMEI,
-			ProjectUUID: conn.ProjectUUID,
-			ParsedData:  string(jsonData),
-			Timestamp:   formattedTime(time.Now()),
+			IMEI: conn.IMEI,
+			// ProjectUUID: conn.ProjectUUID,
+			ParsedData: string(jsonData),
+			Timestamp:  formattedTime(time.Now()),
 		}
 
 		processedData <- sensorData
@@ -331,7 +276,7 @@ func processConnections(incomingConn chan ConnectionInfo, processedData chan Sen
 func respondToClients(processedData chan SensorData, logFile *os.File) {
 	for data := range processedData {
 		// fmt.Printf("IMEI: %d, ProjectUUID: %s\n", data.IMEI, data.ProjectUUID)
-		sendTorabbitmq(data, logFile)
+		sendToMQTT(data, logFile)
 	}
 }
 
@@ -365,8 +310,9 @@ func main() {
 	defer db.Close()
 
 	// Menerima koneksi asinkron
-	go acceptConnections(db, listener, incomingConn)
+	go acceptConnections(listener, incomingConn)
 
+	// Multiple Device on One TCP (Make 5 Channel)
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go processConnections(incomingConn, processedData, &wg)

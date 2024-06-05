@@ -13,7 +13,7 @@ RUN go build -o tcp_server .
 
 FROM alpine:${ALPINE_VERSION}
 
-LABEL maintainer="vickyphang@rnd.team"
+LABEL maintainer="ramaprakoso@dtc.team"
 
 RUN apk add --no-cache ca-certificates tzdata
 
