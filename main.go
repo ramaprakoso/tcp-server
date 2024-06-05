@@ -14,8 +14,9 @@ import (
 	"tcp_server/teltonika_decoder"
 	"time"
 
+	MQTT "github.com/eclipse/paho.mqtt.golang"
+
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/streadway/amqp"
 )
 
 type ConnectionInfo struct {
@@ -102,36 +103,44 @@ func failOnError(err error, msg string) {
 }
 
 func sendToMQTT(jsonData map[string]interface{}, logFile *os.File) {
-	fmt.Println(jsonData)
-}
+	broker := "tcp://38.47.73.71:1883"
+	username := "aged-shape"
+	password := "7tVUh1714622411"
 
-func declareQueue(ch *amqp.Channel, imei int64) (amqp.Queue, error) {
-	queueName := strconv.FormatInt(imei, 10)
+	opts := MQTT.NewClientOptions()
+	opts.AddBroker(broker)
+	opts.SetClientID("TSAAfT5STQ1714622411")
+	opts.SetUsername(username)
+	opts.SetPassword(password)
 
-	// Declare a queue with the given name
-	q, err := ch.QueueDeclare(
-		queueName, // name
-		false,     // durable
-		false,     // delete when unused
-		false,     // exclusive
-		false,     // no-wait
-		nil,       // arguments
-	)
-	if err != nil {
-		// If the queue already exists, the error might be due to that, so ignore it
-		if !isQueueExistError(err) {
-			return q, err
-		}
+	// Create a new MQTT client
+	client := MQTT.NewClient(opts)
+
+	// Connect the client to the broker
+	if token := client.Connect(); token.Wait() && token.Error() != nil {
+		log.Fatalf("Error connecting to broker: %v", token.Error())
 	}
+	fmt.Println("Connected to MQTT broker")
 
-	return q, nil
-}
+	// Convert jsonData map to JSON string
+	jsonBytes, err := json.Marshal(jsonData)
+	if err != nil {
+		log.Fatalf("Error marshalling JSON data: %v", err)
+	}
+	jsonString := string(jsonBytes)
 
-// isQueueExistError checks if the error indicates that the queue already exists.
-func isQueueExistError(err error) bool {
-	const queueExistErrorCode = 406
-	amqpError, ok := err.(*amqp.Error)
-	return ok && amqpError.Code == queueExistErrorCode
+	// Publish the JSON string to the topic
+	topic := "testing/teltonika"
+	token := client.Publish(topic, 0, false, jsonString)
+	token.Wait()
+	fmt.Printf("Published message to topic %s: %s\n", topic, jsonString)
+
+	// Wait for a few seconds to receive messages
+	time.Sleep(6 * time.Second)
+
+	// Disconnect the client
+	client.Disconnect(250)
+	fmt.Println("Disconnected from MQTT broker")
 }
 
 func createLogFile() (*os.File, error) {
